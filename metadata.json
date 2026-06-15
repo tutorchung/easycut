@@ -1,0 +1,6 @@
+{
+  "name": "이미지 자유 분할기",
+  "description": "격자 가이드, 도형, 자유형 펜을 사용하여 이미지를 브라우저에서 안전하고 자유롭게 분할하고 다운로드하는 도구",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
