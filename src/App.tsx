@@ -66,6 +66,9 @@ export default function App() {
   // Status for general processing states
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Output packaging preference: bundle into one ZIP, or drop each piece straight into the download folder
+  const [saveMode, setSaveMode] = useState<'zip' | 'individual'>('zip');
+
   // Drag & drop highlight state
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -571,10 +574,7 @@ export default function App() {
       const finalXs = cleanArray(xs, wNative);
       const finalYs = cleanArray(ys, hNative);
 
-      const zip = new JSZip();
-      const folder = zip.folder(`${originalFileName}_pieces`);
-
-      let idx = 1;
+      const pieces: { name: string; blob: Blob }[] = [];
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
 
@@ -604,18 +604,23 @@ export default function App() {
             canvas.toBlob((b) => res(b), 'image/png')
           );
           if (blob) {
-            const name = `${String(r + 1).padStart(2, '0')}_${String(c + 1).padStart(
-              2,
-              '0'
-            )}.png`;
-            folder?.file(name, blob);
+            const name = `${originalFileName}_${String(r + 1).padStart(2, '0')}_${String(
+              c + 1
+            ).padStart(2, '0')}.png`;
+            pieces.push({ name, blob });
           }
-          idx++;
         }
       }
 
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      triggerBlobDownload(zipBlob, `${originalFileName}_divided_grid.zip`);
+      if (saveMode === 'individual') {
+        await downloadBlobsIndividually(pieces);
+      } else {
+        const zip = new JSZip();
+        const folder = zip.folder(`${originalFileName}_pieces`);
+        pieces.forEach((p) => folder?.file(p.name, p.blob));
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        triggerBlobDownload(zipBlob, `${originalFileName}_divided_grid.zip`);
+      }
     } catch (err) {
       console.error(err);
       alert('격자 분할 처리 중 오류 발생');
@@ -664,30 +669,28 @@ export default function App() {
     try {
       const originalImage = await loadImageElement();
 
-      // Dual path: single direct download, or package zip
-      if (shapes.length === 1) {
-        const blob = await cropShapeToBlob(shapes[0], originalImage);
+      // Render every placed shape to its own PNG blob first
+      const pieces: { name: string; blob: Blob }[] = [];
+      for (let i = 0; i < shapes.length; i++) {
+        const s = shapes[i];
+        const blob = await cropShapeToBlob(s, originalImage);
         if (blob) {
-          triggerBlobDownload(
-            blob,
-            `${originalFileName}_shape_${shapes[0].type}.png`
-          );
+          pieces.push({
+            name: `${originalFileName}_${String(i + 1).padStart(2, '0')}_shape_${s.type}.png`,
+            blob
+          });
         }
+      }
+
+      // A single shape always downloads straight to disk regardless of mode
+      if (pieces.length === 1) {
+        triggerBlobDownload(pieces[0].blob, pieces[0].name);
+      } else if (saveMode === 'individual') {
+        await downloadBlobsIndividually(pieces);
       } else {
         const zip = new JSZip();
         const folder = zip.folder(`${originalFileName}_shapes`);
-
-        for (let i = 0; i < shapes.length; i++) {
-          const s = shapes[i];
-          const blob = await cropShapeToBlob(s, originalImage);
-          if (blob) {
-            folder?.file(
-              `${String(i + 1).padStart(2, '0')}_shape_${s.type}.png`,
-              blob
-            );
-          }
-        }
-
+        pieces.forEach((p) => folder?.file(p.name, p.blob));
         const zipBlob = await zip.generateAsync({ type: 'blob' });
         triggerBlobDownload(zipBlob, `${originalFileName}_shapes.zip`);
       }
@@ -899,14 +902,19 @@ export default function App() {
       const blob1 = await cropPolygonToBlob(items[0], originalImage);
       const blob2 = await cropPolygonToBlob(items[1], originalImage);
 
-      const zip = new JSZip();
-      const folder = zip.folder(`${originalFileName}_split_divider`);
+      const pieces: { name: string; blob: Blob }[] = [];
+      if (blob1) pieces.push({ name: `${originalFileName}_01_top_portion.png`, blob: blob1 });
+      if (blob2) pieces.push({ name: `${originalFileName}_02_bottom_portion.png`, blob: blob2 });
 
-      if (blob1) folder?.file('01_top_portion.png', blob1);
-      if (blob2) folder?.file('02_bottom_portion.png', blob2);
-
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      triggerBlobDownload(zipBlob, `${originalFileName}_split_divider.zip`);
+      if (saveMode === 'individual') {
+        await downloadBlobsIndividually(pieces);
+      } else {
+        const zip = new JSZip();
+        const folder = zip.folder(`${originalFileName}_split_divider`);
+        pieces.forEach((p) => folder?.file(p.name, p.blob));
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        triggerBlobDownload(zipBlob, `${originalFileName}_split_divider.zip`);
+      }
     } catch (err) {
       console.error(err);
       alert('분할선 자르기 적용 중 오류 발생');
@@ -925,6 +933,19 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  // Fire each piece as its own download so they land directly in the download folder.
+  // A short gap between files keeps the browser from throttling/blocking the burst.
+  const downloadBlobsIndividually = async (
+    files: { name: string; blob: Blob }[]
+  ) => {
+    for (let i = 0; i < files.length; i++) {
+      triggerBlobDownload(files[i].blob, files[i].name);
+      if (i < files.length - 1) {
+        await new Promise((res) => setTimeout(res, 300));
+      }
+    }
   };
 
   return (
@@ -1656,7 +1677,50 @@ export default function App() {
 
             {/* Ultimate Action Buttons styled in clean dark button */}
             <div className="flex-none flex flex-col justify-center sm:items-end gap-2.5">
-              
+
+              {/* Output format toggle: bundle into ZIP, or drop each piece into the download folder.
+                  Only shown when the current action yields more than one image. */}
+              {(() => {
+                const pieceCount =
+                  selectedMode === 'grid'
+                    ? (hGuides.length + 1) * (vGuides.length + 1)
+                    : selectedMode === 'shape'
+                    ? shapes.length
+                    : freeMode === 'divider'
+                    ? 2
+                    : 1;
+                if (pieceCount < 2) return null;
+                return (
+                  <div className="w-full sm:w-auto">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 text-left sm:text-right">
+                      저장 방식
+                    </p>
+                    <div className="inline-flex w-full sm:w-auto bg-slate-100 border border-slate-200 p-1 rounded-lg gap-1">
+                      <button
+                        onClick={() => setSaveMode('zip')}
+                        className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
+                          saveMode === 'zip'
+                            ? 'bg-[#0f172a] text-white shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        ZIP 한 개로
+                      </button>
+                      <button
+                        onClick={() => setSaveMode('individual')}
+                        className={`flex-1 sm:flex-none px-3 py-1.5 rounded-md text-[11px] font-semibold transition-all ${
+                          saveMode === 'individual'
+                            ? 'bg-[#0f172a] text-white shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        낱장으로 주르륵
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Main Download compiled element trigger */}
               {selectedMode === 'grid' && (
                 <button
@@ -1666,7 +1730,11 @@ export default function App() {
                 >
                   <Download className="w-4 h-4 text-white" />
                   <span>
-                    {isProcessing ? '압축 조율 중...' : '격자 잘라서 ZIP 다운로드'}
+                    {isProcessing
+                      ? '가공 중...'
+                      : saveMode === 'individual'
+                      ? '격자 잘라서 낱장 다운로드'
+                      : '격자 잘라서 ZIP 다운로드'}
                   </span>
                 </button>
               )}
@@ -1683,6 +1751,8 @@ export default function App() {
                       ? '도형 연산 중...'
                       : shapes.length === 1
                       ? '도형 자르기 다운로드 (PNG)'
+                      : saveMode === 'individual'
+                      ? '도형 잘라서 낱장 다운로드'
                       : '도형 잘라서 ZIP 다운로드'}
                   </span>
                 </button>
@@ -1709,6 +1779,8 @@ export default function App() {
                       ? '연필선 가공 중...'
                       : freeMode === 'region'
                       ? '자유 영역 다운로드 (PNG)'
+                      : saveMode === 'individual'
+                      ? '분할선 잘라 낱장 다운로드'
                       : '분할선 잘라 ZIP 다운로드'}
                   </span>
                 </button>
