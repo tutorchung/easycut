@@ -202,6 +202,12 @@ export default function App() {
     type: 'h' | 'v',
     index: number
   ) => {
+    // Let the delete badge handle its own click: capturing the pointer here would
+    // retarget the following pointerup to the guide, so the button's click never fires.
+    if ((e.target as HTMLElement).closest('.shape-delete-btn')) {
+      return;
+    }
+
     e.preventDefault();
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
