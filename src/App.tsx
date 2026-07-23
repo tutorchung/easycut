@@ -9,6 +9,7 @@ import {
   Trash2,
   Plus,
   RotateCcw,
+  RotateCw,
   Download,
   Grid,
   Sliders,
@@ -276,7 +277,8 @@ export default function App() {
       left: Math.min((1 - w) / 2 + cascadeOffset, 1 - w),
       top: Math.min((1 - h) / 2 + cascadeOffset, 1 - h),
       width: w,
-      height: h
+      height: h,
+      rotation: 0
     };
 
     setShapes((prev) => [...prev, newShape]);
@@ -300,7 +302,11 @@ export default function App() {
 
   // Interactive dragging of shapes
   const handleShapeDragStart = (e: React.PointerEvent<HTMLDivElement>, shapeId: string) => {
-    if ((e.target as HTMLElement).closest('.shape-handle') || (e.target as HTMLElement).closest('.shape-delete-btn')) {
+    if (
+      (e.target as HTMLElement).closest('.shape-handle') ||
+      (e.target as HTMLElement).closest('.shape-delete-btn') ||
+      (e.target as HTMLElement).closest('.shape-rotate-handle')
+    ) {
       return;
     }
     e.preventDefault();
@@ -341,7 +347,9 @@ export default function App() {
     window.addEventListener('pointerup', onPointerUp);
   };
 
-  // Dynamic reshaping from edge resize handles
+  // Dynamic reshaping from edge resize handles.
+  // Works in the shape's own (rotated) frame so dragging a corner feels natural at any angle,
+  // while the diagonally-opposite corner stays pinned in place.
   const handleShapeResizeStart = (
     e: React.PointerEvent<HTMLDivElement>,
     shapeId: string,
@@ -356,74 +364,128 @@ export default function App() {
     const shape = shapes.find((s) => s.id === shapeId);
     if (!shape) return;
 
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const start = { ...shape };
-    const lockAspect = start.type === 'square' || start.type === 'circle';
+    const Wp = rect.width;
+    const Hp = rect.height;
+    const theta = ((shape.rotation || 0) * Math.PI) / 180;
+    // Shape-local axes expressed in screen-pixel space
+    const ux = Math.cos(theta);
+    const uy = Math.sin(theta);
+    const vx = -Math.sin(theta);
+    const vy = Math.cos(theta);
+
+    const lockAspect = shape.type === 'square' || shape.type === 'circle';
+
+    // Start geometry in pixels
+    const startW = shape.width * Wp;
+    const startH = shape.height * Hp;
+    const startCx = (shape.left + shape.width / 2) * Wp;
+    const startCy = (shape.top + shape.height / 2) * Hp;
+
+    // Local sign of the dragged corner (+/-1 along each local axis)
+    const sx = corner === 'ne' || corner === 'se' ? 1 : -1;
+    const sy = corner === 'sw' || corner === 'se' ? 1 : -1;
+
+    // Pinned (opposite) corner, in screen pixels — stays fixed for the whole gesture
+    const ax = startCx + ux * (-sx * startW / 2) + vx * (-sy * startH / 2);
+    const ay = startCy + uy * (-sx * startW / 2) + vy * (-sy * startH / 2);
+    // Dragged corner position at gesture start
+    const mx0 = startCx + ux * (sx * startW / 2) + vx * (sy * startH / 2);
+    const my0 = startCy + uy * (sx * startW / 2) + vy * (sy * startH / 2);
+
+    const startClientX = e.clientX;
+    const startClientY = e.clientY;
+    const MIN_PX = 15;
 
     const onPointerMove = (ev: PointerEvent) => {
-      let dx = (ev.clientX - startX) / rect.width;
-      let dy = (ev.clientY - startY) / rect.height;
+      const mx = mx0 + (ev.clientX - startClientX);
+      const my = my0 + (ev.clientY - startClientY);
 
-      let left = start.left;
-      let top = start.top;
-      let width = start.width;
-      let height = start.height;
+      // Vector anchor -> dragged corner, projected onto the local axes gives the new extents
+      const dx = mx - ax;
+      const dy = my - ay;
+      let w = sx * (dx * ux + dy * uy);
+      let h = sy * (dx * vx + dy * vy);
 
-      if (corner === 'se') {
-        width = start.width + dx;
-        height = start.height + dy;
-      } else if (corner === 'sw') {
-        width = start.width - dx;
-        height = start.height + dy;
-        left = start.left + dx;
-      } else if (corner === 'ne') {
-        width = start.width + dx;
-        height = start.height - dy;
-        top = start.top + dy;
-      } else {
-        // nw
-        width = start.width - dx;
-        height = start.height - dy;
-        left = start.left + dx;
-        top = start.top + dy;
-      }
+      w = Math.max(MIN_PX, w);
+      h = Math.max(MIN_PX, h);
 
       if (lockAspect) {
-        // Enforce aspect-locked pixel proportions
-        const pixelW = width * rect.width;
-        const pixelH = height * rect.height;
-        const side = Math.max(Math.min(pixelW, pixelH), 15);
-        width = side / rect.width;
-        height = side / rect.height;
-
-        if (corner === 'sw' || corner === 'nw') {
-          left = start.left + start.width - width;
-        }
-        if (corner === 'ne' || corner === 'nw') {
-          top = start.top + start.height - height;
-        }
+        const side = Math.max(w, h);
+        w = side;
+        h = side;
       }
 
-      const minScale = 0.02;
-      if (width < minScale) {
-        width = minScale;
-        if (corner === 'sw' || corner === 'nw') left = start.left + start.width - width;
-      }
-      if (height < minScale) {
-        height = minScale;
-        if (corner === 'ne' || corner === 'nw') top = start.top + start.height - height;
-      }
+      // New center keeps the pinned corner fixed
+      const cx = ax + ux * (sx * w / 2) + vx * (sy * h / 2);
+      const cy = ay + uy * (sx * w / 2) + vy * (sy * h / 2);
 
-      left = Math.max(0, left);
-      top = Math.max(0, top);
-      if (left + width > 1) width = 1 - left;
-      if (top + height > 1) height = 1 - top;
+      const newLeft = (cx - w / 2) / Wp;
+      const newTop = (cy - h / 2) / Hp;
+      const newWidth = w / Wp;
+      const newHeight = h / Hp;
 
       setShapes((prev) =>
         prev.map((s) =>
-          s.id === shapeId ? { ...s, left, top, width, height } : s
+          s.id === shapeId
+            ? { ...s, left: newLeft, top: newTop, width: newWidth, height: newHeight }
+            : s
         )
+      );
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  };
+
+  // Normalize an angle into the (-180, 180] range for tidy display/storage
+  const normalizeAngle = (deg: number) => {
+    let d = ((deg + 180) % 360 + 360) % 360 - 180;
+    if (d === -180) d = 180;
+    return d;
+  };
+
+  const setShapeRotation = (id: string, deg: number) => {
+    const d = normalizeAngle(deg);
+    setShapes((prev) => prev.map((s) => (s.id === id ? { ...s, rotation: d } : s)));
+  };
+
+  // Drag the floating knob above a shape to spin it about its center
+  const handleShapeRotateStart = (
+    e: React.PointerEvent<HTMLDivElement>,
+    shapeId: string
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedShapeId(shapeId);
+
+    const rect = workspaceRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const shape = shapes.find((s) => s.id === shapeId);
+    if (!shape) return;
+
+    const centerX = rect.left + (shape.left + shape.width / 2) * rect.width;
+    const centerY = rect.top + (shape.top + shape.height / 2) * rect.height;
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - centerX;
+      const dy = ev.clientY - centerY;
+      // Knob points straight up at rotation 0, hence the +90° offset
+      let deg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+      if (ev.shiftKey) {
+        // Hold Shift for precise 15° steps
+        deg = Math.round(deg / 15) * 15;
+      } else {
+        // Otherwise gently snap when close to a right angle
+        const nearest = Math.round(deg / 90) * 90;
+        if (Math.abs(deg - nearest) < 4) deg = nearest;
+      }
+      setShapes((prev) =>
+        prev.map((s) => (s.id === shapeId ? { ...s, rotation: normalizeAngle(deg) } : s))
       );
     };
 
@@ -636,10 +698,31 @@ export default function App() {
     const W = originalImage.naturalWidth;
     const H = originalImage.naturalHeight;
 
-    const x0 = Math.round(shape.left * W);
-    const y0 = Math.round(shape.top * H);
-    const targetW = Math.max(1, Math.round(shape.width * W));
-    const targetH = Math.max(1, Math.round(shape.height * H));
+    // Shape geometry in source pixels
+    const rw = shape.width * W;
+    const rh = shape.height * H;
+    const cx = (shape.left + shape.width / 2) * W;
+    const cy = (shape.top + shape.height / 2) * H;
+    const theta = ((shape.rotation || 0) * Math.PI) / 180;
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+
+    // Tight bounding box of the rotated shape so the output has no wasted margin
+    let bboxW: number;
+    let bboxH: number;
+    if (shape.type === 'circle' || shape.type === 'ellipse') {
+      const a = rw / 2;
+      const b = rh / 2;
+      bboxW = 2 * Math.sqrt(a * a * cos * cos + b * b * sin * sin);
+      bboxH = 2 * Math.sqrt(a * a * sin * sin + b * b * cos * cos);
+    } else {
+      // square / rect / heart -> bounding box of the rotated rectangle
+      bboxW = Math.abs(rw * cos) + Math.abs(rh * sin);
+      bboxH = Math.abs(rw * sin) + Math.abs(rh * cos);
+    }
+
+    const targetW = Math.max(1, Math.round(bboxW));
+    const targetH = Math.max(1, Math.round(bboxH));
 
     const canvas = document.createElement('canvas');
     canvas.width = targetW;
@@ -648,16 +731,32 @@ export default function App() {
 
     if (!ctx) return null;
 
+    // Build the clip path in the shape's rotated frame, centered on the canvas.
+    ctx.translate(targetW / 2, targetH / 2);
+    ctx.rotate(theta);
+
     if (shape.type === 'circle' || shape.type === 'ellipse') {
       ctx.beginPath();
-      ctx.ellipse(targetW / 2, targetH / 2, targetW / 2, targetH / 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, rw / 2, rh / 2, 0, 0, Math.PI * 2);
       ctx.clip();
     } else if (shape.type === 'heart') {
-      drawHeartPath(ctx, targetW, targetH);
+      ctx.translate(-rw / 2, -rh / 2);
+      drawHeartPath(ctx, rw, rh); // begins its own path
+      ctx.clip();
+    } else {
+      ctx.beginPath();
+      ctx.rect(-rw / 2, -rh / 2, rw, rh);
       ctx.clip();
     }
 
-    ctx.drawImage(originalImage, x0, y0, targetW, targetH, 0, 0, targetW, targetH);
+    // Reset the transform (keeping the clip) and paint the source upright, so only the
+    // cutting mask is rotated — a 45°-turned square becomes a diamond, content stays level.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(
+      originalImage,
+      Math.round(targetW / 2 - cx),
+      Math.round(targetH / 2 - cy)
+    );
 
     return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
   };
@@ -935,6 +1034,9 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Currently highlighted shape, if any (drives the rotation control panel)
+  const selectedShape = shapes.find((s) => s.id === selectedShapeId) || null;
+
   // Fire each piece as its own download so they land directly in the download folder.
   // A short gap between files keeps the browser from throttling/blocking the burst.
   const downloadBlobsIndividually = async (
@@ -1207,6 +1309,82 @@ export default function App() {
                       <span>작업대에 도형 추가</span>
                     </button>
 
+                    {/* ROTATION CONTROLS FOR THE SELECTED SHAPE */}
+                    <div className="bg-slate-50/50 border border-slate-200/60 rounded-lg p-4 flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold text-[10px] text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                          <RotateCw className="w-3.5 h-3.5 text-[#3b82f6]" />
+                          선택한 도형 각도
+                        </p>
+                        <span className="text-[11px] font-bold text-[#1e40af] tabular-nums">
+                          {selectedShape ? `${Math.round(selectedShape.rotation)}°` : '—'}
+                        </span>
+                      </div>
+
+                      {selectedShape ? (
+                        <>
+                          <input
+                            type="range"
+                            min={-180}
+                            max={180}
+                            step={1}
+                            value={Math.round(selectedShape.rotation)}
+                            onChange={(e) =>
+                              setShapeRotation(selectedShape.id, parseInt(e.target.value))
+                            }
+                            className="w-full accent-[#3b82f6] cursor-pointer"
+                          />
+
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={-180}
+                              max={180}
+                              value={Math.round(selectedShape.rotation)}
+                              onChange={(e) =>
+                                setShapeRotation(
+                                  selectedShape.id,
+                                  parseInt(e.target.value) || 0
+                                )
+                              }
+                              className="w-16 font-semibold text-sm bg-white border border-slate-200 rounded-lg p-2 text-center focus:outline-none focus:border-[#3b82f6] focus:ring-1 focus:ring-[#3b82f6] transition"
+                            />
+                            <div className="grid grid-cols-4 gap-1 flex-1">
+                              {[-90, -45, 45, 90].map((d) => (
+                                <button
+                                  key={d}
+                                  onClick={() =>
+                                    setShapeRotation(
+                                      selectedShape.id,
+                                      selectedShape.rotation + d
+                                    )
+                                  }
+                                  className="py-1.5 rounded-md text-[11px] font-semibold bg-white border border-slate-200 text-slate-600 hover:border-[#3b82f6] hover:text-[#1e40af] transition"
+                                >
+                                  {d > 0 ? `+${d}` : `${d}`}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => setShapeRotation(selectedShape.id, 0)}
+                            disabled={selectedShape.rotation === 0}
+                            className="flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 text-slate-600 font-semibold text-[11px] py-2 rounded-lg border border-slate-200 transition disabled:opacity-40"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            각도 0°로 초기화
+                          </button>
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-slate-400 font-medium leading-relaxed">
+                          작업대에서 도형을 하나 선택하면 각도를 조절할 수 있어요. 도형 위쪽의{' '}
+                          <RotateCw className="inline w-3 h-3 text-[#3b82f6] -mt-0.5" /> 손잡이를
+                          드래그해도 됩니다.
+                        </p>
+                      )}
+                    </div>
+
                     <button
                       onClick={clearAllShapes}
                       disabled={!imageSrc || shapes.length === 0}
@@ -1319,6 +1497,10 @@ export default function App() {
                   </li>
                   <li className="flex gap-2">
                     <span className="text-[#3b82f6] font-bold flex-none">3.</span>
+                    <span>도형 위쪽의 <span className="font-bold text-[#3b82f6]">회전 손잡이</span>를 돌리거나 왼쪽 <span className="font-bold text-[#3b82f6]">각도</span> 조절로 기울일 수 있어요. 사각형을 90°(또는 45°) 돌리면 마름모가 됩니다.</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-[#3b82f6] font-bold flex-none">4.</span>
                     <span>도형별 우상단 <span className="font-bold text-[#ef4444]">×</span> 패널로 개별 조각을 삭제할 수 있습니다.</span>
                   </li>
                 </>
@@ -1479,6 +1661,8 @@ export default function App() {
                           top: `${s.top * 100}%`,
                           width: `${s.width * 100}%`,
                           height: `${s.height * 100}%`,
+                          transform: `rotate(${s.rotation}deg)`,
+                          transformOrigin: 'center center',
                           borderRadius:
                             s.type === 'circle' || s.type === 'ellipse' ? '50%' : '0'
                         }}
@@ -1505,8 +1689,17 @@ export default function App() {
                           className={`absolute top-1.5 left-2 px-1.5 py-0.5 rounded-sm text-[8px] font-bold text-white selection:bg-slate-300 pointer-events-none uppercase shadow-sm ${
                             isSelected ? 'bg-[#3b82f6]' : 'bg-slate-500'
                           }`}
+                          style={{
+                            transform: `rotate(${-s.rotation}deg)`,
+                            transformOrigin: 'top left'
+                          }}
                         >
                           {SHAPE_LABELS[s.type].split(' ')[0]}
+                          {isSelected && s.rotation !== 0 && (
+                            <span className="ml-1 opacity-80">
+                              {Math.round(s.rotation)}°
+                            </span>
+                          )}
                         </span>
 
                         {/* Drag Move Handle Indicator */}
@@ -1524,6 +1717,20 @@ export default function App() {
                           >
                             ×
                           </button>
+                        )}
+
+                        {/* Rotation Knob (drag to spin, hold Shift for 15° steps) */}
+                        {isSelected && (
+                          <div
+                            title="드래그하여 회전 (Shift: 15°씩)"
+                            onPointerDown={(e) => handleShapeRotateStart(e, s.id)}
+                            className="shape-rotate-handle absolute left-1/2 top-0 -translate-x-1/2 -translate-y-full flex flex-col items-center z-40 cursor-grab active:cursor-grabbing"
+                          >
+                            <div className="w-5 h-5 rounded-full bg-white border-2 border-[#3b82f6] shadow flex items-center justify-center">
+                              <RotateCw className="w-3 h-3 text-[#3b82f6]" />
+                            </div>
+                            <div className="w-[2px] h-4 bg-[#3b82f6]/70" />
+                          </div>
                         )}
 
                         {/* Edge Resizers */}
