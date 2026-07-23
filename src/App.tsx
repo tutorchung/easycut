@@ -1653,7 +1653,9 @@ export default function App() {
                       <div
                         key={s.id}
                         onPointerDown={(e) => handleShapeDragStart(e, s.id)}
-                        className={`absolute box-border select-none z-20 ${
+                        className={`absolute box-border select-none ${
+                          isSelected ? 'z-30' : 'z-20'
+                        } ${
                           s.type === 'heart'
                             ? (isSelected
                                 ? 'border border-dashed border-[#3b82f6]/30 shadow-sm cursor-move'
@@ -1715,15 +1717,20 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Delete Shape Button */}
-                        {isSelected && (
-                          <button
-                            onPointerDown={(e) => deleteShapeInstance(s.id, e)}
-                            className="shape-delete-btn absolute -top-2.5 -right-2.5 w-5.5 h-5.5 bg-rose-500 hover:bg-rose-600 text-white rounded-full flex items-center justify-center text-xs font-bold border border-white shadow-sm active:scale-90"
-                          >
-                            ×
-                          </button>
-                        )}
+                        {/* Delete Shape Button — always available so any one of several
+                            shapes can be removed without selecting it first */}
+                        <button
+                          title="이 도형만 삭제"
+                          onPointerDown={(e) => deleteShapeInstance(s.id, e)}
+                          className={`shape-delete-btn absolute -top-2.5 -right-2.5 w-5.5 h-5.5 rounded-full text-white flex items-center justify-center text-xs font-bold border border-white shadow-sm transition hover:bg-rose-600 ${
+                            isSelected ? 'bg-rose-500' : 'bg-rose-400/90'
+                          }`}
+                          style={{
+                            transform: `rotate(${-s.rotation}deg)`
+                          }}
+                        >
+                          ×
+                        </button>
 
                         {/* Rotation Knob (drag to spin, hold Shift for 15° steps) */}
                         {isSelected && (
